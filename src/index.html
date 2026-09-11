@@ -7,7 +7,42 @@
     <link rel="stylesheet" href="app.css" />
   </head>
   <body>
-    <main id="app">PromptDeck</main>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>PromptDeck</h1>
+          <p class="vault" id="vault">Loading your vault…</p>
+        </div>
+        <button class="side-new" id="new-file">New file</button>
+        <nav aria-label="Vault files">
+          <ul class="files" id="files"></ul>
+        </nav>
+      </aside>
+
+      <main class="pane">
+        <div class="toolbar">
+          <input
+            class="search"
+            id="search"
+            type="search"
+            placeholder="Search blocks"
+            aria-label="Search blocks"
+            autocomplete="off"
+          />
+          <div class="toolbar-actions">
+            <button id="new-block">New block</button>
+            <button id="reload">Reload</button>
+            <button class="danger" id="delete-file">Delete file</button>
+          </div>
+        </div>
+        <div class="sheet" id="blocks"></div>
+      </main>
+    </div>
+
+    <div class="compose" id="compose" hidden></div>
+    <div class="overlay" id="overlay" hidden></div>
+    <p class="toast" id="toast" role="status" aria-live="polite" hidden></p>
+
     <script src="app.js"></script>
   </body>
 </html>
