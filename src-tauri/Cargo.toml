@@ -1,6 +1,6 @@
 [package]
 name = "promptdeck"
-version = "0.1.0"
+version = "0.2.0"
 description = "Store prompts as markdown blocks and copy them into a terminal"
 authors = ["Milan"]
 license = "MIT"
@@ -11,10 +11,18 @@ rust-version = "1.77.2"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-clipboard-manager = "2"
+# The whole point of the app is getting a prompt into a terminal without
+# hunting for a window, which needs a shortcut the desktop routes to us even
+# when we do not have focus. Nothing in std can ask X11 or Wayland for that.
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Deleting a file moves it to the desktop trash. Doing that properly means
+# claiming a name atomically, URL-encoding the original path and stamping a
+# local-time deletion date; getting it wrong means the file is simply gone.
+trash = "5.2.3"
 
 [profile.release]
 opt-level = "s"

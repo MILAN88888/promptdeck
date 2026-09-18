@@ -17,7 +17,7 @@ Download from [the latest release](https://github.com/MILAN88888/promptdeck/rele
 **Debian, Ubuntu and derivatives**
 
 ```sh
-sudo apt install ./PromptDeck_0.1.0_amd64.deb
+sudo apt install ./PromptDeck_0.2.0_amd64.deb
 ```
 
 Then launch PromptDeck from your application menu, or run `promptdeck`.
@@ -25,8 +25,8 @@ Then launch PromptDeck from your application menu, or run `promptdeck`.
 **AppImage** — no install, runs anywhere
 
 ```sh
-chmod +x PromptDeck_0.1.0_amd64.AppImage
-./PromptDeck_0.1.0_amd64.AppImage
+chmod +x PromptDeck_0.2.0_amd64.AppImage
+./PromptDeck_0.2.0_amd64.AppImage
 ```
 
 ## Using it
@@ -50,15 +50,26 @@ A short subject line under 60 characters, then the reasoning as prose.
 
 - **Copy** puts the block body on the clipboard. The button says "Copied" for a
   moment so you know it landed.
-- **Tick two or more blocks** and a bar appears offering to copy them together.
-  They arrive in file order with a blank line between, whatever order you
-  ticked them in.
+- **Tick two or more blocks** and a bar appears offering to copy them together,
+  or to fill their placeholders in one go. They arrive in file order with a
+  blank line between, whatever order you ticked them in.
 - **Edit** swaps the body for a text box. Save writes the file.
 - **Double-click a heading** to rename it. Enter commits, Escape cancels.
-- **Search** filters blocks by heading and body.
+- **Ctrl+Alt+P anywhere** opens a search over every block in every file, from
+  whatever you were doing. Enter copies the block and puts PromptDeck away, so
+  you land back in your terminal ready to paste.
+- **Search** filters blocks by heading and body, in the open file.
 - **Reload** re-reads the open file, for when you just changed it in vim.
-- `{{placeholder}}` text is highlighted so you can see what still needs filling
-  in by hand.
+- `{{placeholder}}` text is highlighted. A block that has any gets a **Fill…**
+  button: it asks once for each name, then copies the filled-in text. Anything
+  you leave blank keeps its marker, and the file itself is never changed — the
+  filling happens on its way to the clipboard.
+- **Delete file** moves the file to your trash, so a misclick is recoverable.
+- **Delete block** asks first, and then offers to put it back for a few
+  seconds. Take the offer and the block returns where it was, body and all.
+
+Closing the window leaves PromptDeck in your system tray so `Ctrl+Alt+P` keeps
+working. Quit properly from the tray menu.
 
 Frontmatter and anything above the first heading are yours. PromptDeck carries
 them through untouched on every save.
@@ -67,7 +78,9 @@ them through untouched on every save.
 
 | | |
 | --- | --- |
-| `Ctrl+K` | Search, `Escape` clears it |
+| `Ctrl+Alt+P` | Open the deck from anywhere and find a block. Works when PromptDeck is not in front |
+| `↑` `↓` `Enter` | Move through the results, and copy the one you land on |
+| `Ctrl+K` | Search the open file, `Escape` clears it |
 | `Ctrl+N` | New file |
 | `Ctrl+Shift+N` | New block |
 | `Ctrl+S` | Save the open editor |
@@ -77,7 +90,8 @@ them through untouched on every save.
 Needs [Rust](https://rustup.rs) and Node. On Debian or Ubuntu:
 
 ```sh
-sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf libxdo-dev
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf \
+  libxdo-dev libayatana-appindicator3-dev
 npm install
 npm run dev      # run it
 npm run build    # produce a .deb and an .AppImage

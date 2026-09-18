@@ -1,6 +1,6 @@
 {
   "name": "promptdeck",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Store prompts as markdown blocks and copy them into a terminal",
   "license": "MIT",
   "private": true,

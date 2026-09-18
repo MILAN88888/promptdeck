@@ -9,12 +9,16 @@
  * ------------------------------------------------------------------ */
 
 function tauriStore() {
-  const { core, clipboardManager } = window.__TAURI__;
+  const { core, clipboardManager, event, window: win } = window.__TAURI__;
   return {
+    shortcut: () => core.invoke("summon_shortcut"),
+    onSummon: (fn) => event.listen("summon", fn),
+    hide: () => win.getCurrentWindow().hide(),
     vaultPath: () => core.invoke("vault_path"),
     list: () => core.invoke("list_files"),
     read: (name) => core.invoke("read_file", { name }),
-    write: (name, content) => core.invoke("write_file", { name, content }),
+    write: (name, content, stamp) =>
+      core.invoke("write_file", { name, content, stamp }),
     create: (name) => core.invoke("create_file", { name }),
     remove: (name) => core.invoke("delete_file", { name }),
     copy: (text) => clipboardManager.writeText(text),
@@ -22,11 +26,13 @@ function tauriStore() {
 }
 
 function memoryStore() {
-  const now = () => Math.floor(Date.now() / 1000);
+  const now = () => Date.now();
+  let rev = 0;
   const files = new Map([
     [
       "welcome.md",
       {
+        rev: rev++,
         content:
           "---\ntitle: Welcome\n---\n\nPreview mode. Nothing here is written to disk.\n\n" +
           "## Explain this code\n\nRead the code below and explain what it does, one paragraph.\n\n" +
@@ -55,17 +61,37 @@ function memoryStore() {
   };
 
   return {
+    shortcut: async () => "Ctrl+Alt+P",
+    // Nothing global to listen to in a browser; Ctrl+Alt+P still opens it.
+    onSummon: async () => {},
+    hide: async () => {},
     vaultPath: async () => "Preview — no vault on disk",
     list: async () =>
       [...files.entries()]
         .map(([name, f]) => ({ name, modified: f.modified }))
         .sort((a, b) => b.modified - a.modified || a.name.localeCompare(b.name)),
-    read: async (name) => get(name).content,
-    write: async (name, content) => {
-      get(name);
-      files.set(name, { content, modified: now() });
+    read: async (name) => {
+      const f = get(name);
+      return { content: f.content, stamp: f.rev };
+    },
+    write: async (name, content, stamp) => {
+      if (get(name).rev !== stamp) {
+        throw new Error(
+          `${name} changed on disk since you opened it. Nothing was saved: reload to see the new version.`
+        );
+      }
+      files.set(name, { content, rev: rev++, modified: now() });
     },
     create: async (name) => {
+      if (name.trim() === "") {
+        throw new Error("A prompt file needs a name.");
+      }
+      if (name.startsWith(".")) {
+        throw new Error(`${name} is not allowed: a name cannot start with a dot.`);
+      }
+      if (!name.endsWith(".md") && name.includes(".")) {
+        throw new Error(`${name} is not allowed: prompt files must end in .md.`);
+      }
       const full = name.endsWith(".md") ? name : `${name}.md`;
       guard(full);
       if (files.has(full)) {
@@ -74,6 +100,7 @@ function memoryStore() {
       const title = full.slice(0, -3);
       files.set(full, {
         content: `# ${title}\n\n## New block\n\n`,
+        rev: rev++,
         modified: now(),
       });
       return full;
@@ -92,13 +119,23 @@ const store =
 /* ------------------------------------------------------------------ *
  * Markdown
  *
- * parse(md) -> { front, lead, blocks:[{h,t}] } and serialize(doc) put a
- * file back together byte for byte. Frontmatter and the text above the
- * first heading are carried through untouched: losing them would be
- * losing the user's writing.
+ * parse(md) -> { nl, front, lead, blocks:[{raw,h,t}] } and
+ * serialize(doc) put a file back together byte for byte. A block keeps
+ * the heading line it was read from in `raw`, and `h` is only the text
+ * to show; the two part company when someone renames it, and not
+ * before. Frontmatter, the lead text, CRLF endings and the exact
+ * spelling of a heading all belong to the user and all survive a save.
+ *
+ * scripts/roundtrip.js reads the region between the markers below and
+ * proves that. Keep everything it needs inside them.
  * ------------------------------------------------------------------ */
 
-const HEADING = /^##(?!#)[ \t]*(.*)$/;
+/* markdown:begin */
+
+/** One line at a time, each keeping its terminator, so join("") is exact. */
+const LINE = /[^\n]*\n|[^\n]+/g;
+const HEADING = /^##(?!#)[ \t]*(.*?)[ \t]*\r?\n?$/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const FRONT = /^---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n?/;
 
 function parse(md) {
@@ -110,37 +147,48 @@ function parse(md) {
     rest = rest.slice(front.length);
   }
 
-  const lines = rest.split("\n");
-  const heads = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (HEADING.test(lines[i])) heads.push(i);
-  }
-  if (heads.length === 0) return { front, lead: rest, blocks: [] };
+  const nl = md.includes("\r\n") ? "\r\n" : "\n";
+  const lines = rest.match(LINE) || [];
 
-  let lead = lines.slice(0, heads[0]).join("\n");
-  if (heads[0] > 0) lead += "\n";
+  // A ## inside a fenced code block is code someone wrote, not a heading.
+  const heads = [];
+  let fence = null;
+  for (let i = 0; i < lines.length; i++) {
+    const f = lines[i].match(FENCE);
+    if (fence) {
+      if (f && f[1][0] === fence[0] && f[1].length >= fence.length) fence = null;
+    } else if (f) {
+      fence = f[1];
+    } else if (HEADING.test(lines[i])) {
+      heads.push(i);
+    }
+  }
+  if (heads.length === 0) return { nl, front, lead: rest, blocks: [] };
 
   const blocks = heads.map((start, k) => {
     const end = k + 1 < heads.length ? heads[k + 1] : lines.length;
-    let t = lines.slice(start + 1, end).join("\n");
-    if (end < lines.length) t += "\n";
-    return { h: lines[start].match(HEADING)[1].trim(), t };
+    return {
+      raw: lines[start],
+      h: lines[start].match(HEADING)[1],
+      t: lines.slice(start + 1, end).join(""),
+    };
   });
 
-  return { front, lead, blocks };
+  return { nl, front, lead: lines.slice(0, heads[0]).join(""), blocks };
 }
 
 function serialize(doc) {
-  return (
-    doc.front +
-    doc.lead +
-    doc.blocks.map((b) => `## ${b.h}\n${b.t}`).join("")
-  );
+  return doc.front + doc.lead + doc.blocks.map((b) => b.raw + b.t).join("");
 }
 
-/** The body without its surrounding blank lines. Indentation is kept. */
+/** A block that is not in the file yet, in the file's own line ending. */
+function newBlockOf(doc, h) {
+  return { raw: `## ${h}${doc.nl}`, h, t: doc.nl + doc.nl };
+}
+
+/** The body without its surrounding blank lines, in LF. Indentation is kept. */
 function bodyText(t) {
-  const lines = t.split("\n");
+  const lines = t.replace(/\r\n/g, "\n").split("\n");
   let a = 0;
   let b = lines.length;
   while (a < b && lines[a].trim() === "") a++;
@@ -148,9 +196,20 @@ function bodyText(t) {
   return lines.slice(a, b).join("\n");
 }
 
-function setBody(block, text) {
-  block.t = text === "" ? "\n\n" : `\n${text}\n\n`;
+/** Text out of a textarea is LF; the file gets its own ending back. */
+function setBody(doc, block, text) {
+  const body = doc.nl === "\n" ? text : text.replace(/\n/g, doc.nl);
+  block.t = text === "" ? doc.nl + doc.nl : doc.nl + body + doc.nl + doc.nl;
 }
+
+/** Rename, keeping the line ending the heading already had. */
+function setHeading(block, h) {
+  const had = block.raw.match(/\r?\n$/);
+  block.h = h;
+  block.raw = `## ${h}${had ? had[0] : ""}`;
+}
+
+/* markdown:end */
 
 /* ------------------------------------------------------------------ *
  * State
@@ -165,6 +224,8 @@ let caret = null;
 let picked = new Set();
 let filter = "";
 let copied = null; // block index, or "all"
+let undoing = null; // what the toast's button would do, while it is offered
+let palette = null; // { q, items, sel } while the summoned search is open
 let asking = null; // { title, message, input, value, confirmLabel, danger, resolve }
 let copyTimer = null;
 let toastTimer = null;
@@ -172,6 +233,8 @@ let toastTimer = null;
 const el = {};
 for (const id of [
   "vault",
+  "shortcut",
+  "palette",
   "files",
   "search",
   "blocks",
@@ -196,11 +259,32 @@ const esc = (s) =>
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]
   );
 
-const marked = (s) =>
-  esc(s).replace(/\{\{[^}\n]*\}\}/g, (m) => `<span class="ph">${m}</span>`);
+/** {{like this}}. Highlighted everywhere, and fillable before a copy. */
+const PLACEHOLDER = /\{\{([^}\n]*)\}\}/g;
 
-function ago(secs) {
-  const d = Math.max(0, Math.floor(Date.now() / 1000) - secs);
+const marked = (s) =>
+  esc(s).replace(PLACEHOLDER, (m) => `<span class="ph">${m}</span>`);
+
+/** The distinct placeholder names in some text, in the order they appear. */
+function placeholdersIn(text) {
+  const names = [];
+  for (const m of text.matchAll(PLACEHOLDER)) {
+    const key = m[1].trim();
+    if (key && !names.includes(key)) names.push(key);
+  }
+  return names;
+}
+
+/** Fill what was given. A blank answer keeps its marker rather than a hole. */
+function fillIn(text, values) {
+  return text.replace(PLACEHOLDER, (whole, name) => {
+    const given = values[name.trim()];
+    return given === undefined || given === "" ? whole : given;
+  });
+}
+
+function ago(ms) {
+  const d = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (d < 60) return "just now";
   if (d < 3600) return `${Math.floor(d / 60)} min ago`;
   if (d < 86400) return `${Math.floor(d / 3600)} h ago`;
@@ -234,6 +318,11 @@ function draw() {
     n < 2
       ? ""
       : `<span class="n">${n} blocks selected</span>
+         ${
+           placeholdersIn(textOf(chosen())).length
+             ? `<button data-act="fill-all">Fill…</button>`
+             : ""
+         }
          <button class="accent" data-act="copy-all">${
            copied === "all" ? "Copied" : "Copy together"
          }</button>
@@ -241,6 +330,9 @@ function draw() {
 
   el.overlay.hidden = !asking;
   el.overlay.innerHTML = asking ? dialogHtml() : "";
+
+  el.palette.hidden = !palette;
+  el.palette.innerHTML = palette ? paletteHtml() : "";
 
   el["new-block"].disabled = !doc;
   el.reload.disabled = !cur;
@@ -300,6 +392,11 @@ function card(b, i) {
           editingBody ? " disabled" : ""
         }>Edit</button>
         <button class="danger" data-act="delete-block" data-i="${i}">Delete</button>
+        ${
+          placeholdersIn(body).length
+            ? `<button data-act="fill" data-i="${i}">Fill…</button>`
+            : ""
+        }
         <button class="accent" data-act="copy" data-i="${i}">${
           copied === i ? "Copied" : "Copy"
         }</button>
@@ -309,19 +406,75 @@ function card(b, i) {
   </article>`;
 }
 
+/** Every block in the vault that matches what has been typed. */
+function paletteHits() {
+  const q = palette.q.trim().toLowerCase();
+  if (!q) return palette.items;
+  return palette.items.filter(
+    (it) =>
+      it.h.toLowerCase().includes(q) ||
+      it.body.toLowerCase().includes(q) ||
+      it.file.toLowerCase().includes(q)
+  );
+}
+
+function paletteHtml() {
+  const hits = paletteHits();
+  const sel = Math.min(palette.sel, Math.max(0, hits.length - 1));
+  const list = hits.length
+    ? `<ul class="hits">${hits
+        .map(
+          (it, k) =>
+            `<li><button data-hit="${k}"${
+              k === sel ? ' aria-current="true"' : ""
+            }><span class="hit-h">${esc(it.h)}</span><span class="hit-f">${esc(
+              it.file
+            )}</span><span class="hit-b">${esc(
+              it.body.split("\n")[0]
+            )}</span></button></li>`
+        )
+        .join("")}</ul>`
+    : `<p class="hit-none">${
+        palette.items.length
+          ? `Nothing matches “${esc(palette.q)}”.`
+          : "There are no blocks in your vault yet."
+      }</p>`;
+
+  return `<div class="palette-box" role="dialog" aria-modal="true" aria-label="Find a block">
+    <input id="palette-q" value="${esc(
+      palette.q
+    )}" placeholder="Find a block in any file" aria-label="Find a block in any file" autocomplete="off" />
+    ${list}
+    <p class="hint">Enter copies it and closes. Escape closes.</p>
+  </div>`;
+}
+
 function dialogHtml() {
   return `<div class="dialog" role="dialog" aria-modal="true">
     <h2>${esc(asking.title)}</h2>
     <p>${esc(asking.message)}</p>
     ${
-      asking.input
-        ? `<input id="ask-input" value="${esc(
-            asking.value
-          )}" placeholder="${esc(asking.placeholder || "")}" />`
-        : ""
+      asking.fields
+        ? asking.fields
+            .map(
+              (f, k) =>
+                `<label class="field"><span>${esc(
+                  f.key
+                )}</span><input data-field="${k}" value="${esc(
+                  f.value
+                )}" /></label>`
+            )
+            .join("")
+        : asking.input
+          ? `<input id="ask-input" value="${esc(
+              asking.value
+            )}" placeholder="${esc(asking.placeholder || "")}" />`
+          : ""
     }
     <div class="dialog-actions">
-      <button data-act="ask-cancel">Keep it</button>
+      <button data-act="ask-cancel">${
+        asking.danger ? "Keep it" : "Cancel"
+      }</button>
       <button class="${
         asking.danger ? "danger" : "accent"
       }" data-act="ask-ok">${esc(asking.confirmLabel)}</button>
@@ -330,8 +483,21 @@ function dialogHtml() {
 }
 
 function restoreFocus() {
+  if (palette) {
+    const box = document.getElementById("palette-q");
+    if (box) {
+      box.focus();
+      const at = caret === null ? box.value.length : caret;
+      box.setSelectionRange(at, at);
+      const on = el.palette.querySelector('[aria-current="true"]');
+      if (on) on.scrollIntoView({ block: "nearest" });
+    }
+    return;
+  }
   if (asking) {
-    const input = document.getElementById("ask-input");
+    const input =
+      document.getElementById("ask-input") ||
+      el.overlay.querySelector("[data-field]");
     (input || el.overlay.querySelector('[data-act="ask-ok"]')).focus();
     return;
   }
@@ -353,13 +519,28 @@ function restoreFocus() {
 
 const message = (e) => (typeof e === "string" ? e : e && e.message ? e.message : String(e));
 
-function toast(text) {
-  el.toast.textContent = text;
+/**
+ * A message along the bottom, and at most one thing to do about it.
+ *
+ * The offer and the means to take it live and die together: `undoing` is set
+ * here and cleared when the toast goes, so nothing can be undone after the
+ * app has stopped saying it can be.
+ */
+function toast(text, action) {
+  undoing = action ? action.undo : null;
+  el.toast.innerHTML =
+    esc(text) +
+    (action ? ` <button data-act="toast-do">${esc(action.label)}</button>` : "");
   el.toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    el.toast.hidden = true;
-  }, 4000);
+  toastTimer = setTimeout(hideToast, action ? 9000 : 4000);
+}
+
+function hideToast() {
+  clearTimeout(toastTimer);
+  undoing = null;
+  el.toast.hidden = true;
+  el.toast.innerHTML = "";
 }
 
 async function guard(fn) {
@@ -375,7 +556,9 @@ async function refreshFiles() {
 }
 
 async function open(name) {
-  doc = parse(await store.read(name));
+  const file = await store.read(name);
+  doc = parse(file.content);
+  doc.stamp = file.stamp;
   cur = name;
   editing = null;
   caret = null;
@@ -385,9 +568,26 @@ async function open(name) {
 
 /** Write the current document, then read it straight back from disk. */
 async function save() {
-  await store.write(cur, serialize(doc));
+  await store.write(cur, serialize(doc), doc.stamp);
   await refreshFiles();
   await open(cur);
+}
+
+/**
+ * Change the document and write it. A write that is refused — by a newer
+ * file on disk, a full disk, anything — leaves the document exactly as it
+ * was, so the screen keeps matching the file and nobody loses their typing.
+ */
+async function commit(change) {
+  const before = { ...doc, blocks: doc.blocks.map((b) => ({ ...b })) };
+  change();
+  try {
+    await save();
+  } catch (e) {
+    doc = before;
+    draw();
+    throw e;
+  }
 }
 
 function flash(which) {
@@ -407,6 +607,7 @@ function ask(opts) {
       message: opts.message,
       input: !!opts.input,
       value: opts.value || "",
+      fields: opts.fields,
       placeholder: opts.placeholder,
       confirmLabel: opts.confirmLabel,
       danger: !!opts.danger,
@@ -414,6 +615,14 @@ function ask(opts) {
     };
     draw();
   });
+}
+
+/** What the dialog resolves to when it is confirmed. */
+function answer() {
+  if (asking.fields) {
+    return Object.fromEntries(asking.fields.map((f) => [f.key, f.value]));
+  }
+  return asking.input ? document.getElementById("ask-input").value : true;
 }
 
 function settle(value) {
@@ -445,8 +654,7 @@ const newFile = () =>
 const newBlock = () =>
   guard(async () => {
     if (!doc) return;
-    doc.blocks.push({ h: "New block", t: "\n\n" });
-    await save();
+    await commit(() => doc.blocks.push(newBlockOf(doc, "New block")));
     editing = { i: doc.blocks.length - 1, mode: "body" };
     draft = "";
     caret = null;
@@ -458,12 +666,14 @@ const deleteFile = () =>
     if (!cur) return;
     const ok = await ask({
       title: `Delete ${cur}?`,
-      message: "The file is removed from your vault. This cannot be undone.",
+      message: "The file goes to your trash, so you can still get it back.",
       confirmLabel: "Delete file",
       danger: true,
     });
     if (!ok) return;
+    const gone = cur;
     await store.remove(cur);
+    toast(`${gone} is in your trash.`);
     cur = null;
     doc = null;
     picked.clear();
@@ -480,25 +690,105 @@ const deleteBlock = (i) =>
       danger: true,
     });
     if (!ok) return;
-    doc.blocks.splice(i, 1);
-    await save();
+    // Held by value, and by name: the way back has to survive opening
+    // another file, because people look before they undo.
+    const gone = { ...doc.blocks[i] };
+    const from = cur;
+    await commit(() => doc.blocks.splice(i, 1));
+    toast(`“${gone.h}” deleted.`, {
+      label: "Put it back",
+      undo: () =>
+        guard(async () => {
+          if (cur !== from) await open(from);
+          await commit(() =>
+            doc.blocks.splice(Math.min(i, doc.blocks.length), 0, gone)
+          );
+        }),
+    });
   });
+
+/** The blocks' bodies, in file order, the way they go on the clipboard. */
+const textOf = (indices) =>
+  indices.map((i) => bodyText(doc.blocks[i].t)).join("\n\n");
+
+const chosen = () => [...picked].sort((a, b) => a - b);
 
 const copyBlock = (i) =>
   guard(async () => {
-    await store.copy(bodyText(doc.blocks[i].t));
+    await store.copy(textOf([i]));
     flash(i);
   });
 
 const copyTogether = () =>
   guard(async () => {
-    const text = [...picked]
-      .sort((a, b) => a - b)
-      .map((i) => bodyText(doc.blocks[i].t))
-      .join("\n\n");
-    await store.copy(text);
+    await store.copy(textOf(chosen()));
     flash("all");
   });
+
+/** Ask for each {{placeholder}} once, then copy the filled-in text. */
+const fillAndCopy = (indices, which) =>
+  guard(async () => {
+    const text = textOf(indices);
+    const names = placeholdersIn(text);
+    if (names.length === 0) {
+      await store.copy(text);
+      return flash(which);
+    }
+    const values = await ask({
+      title: names.length === 1 ? "Fill in the placeholder" : "Fill in the placeholders",
+      message: "Anything you leave blank keeps its marker, so you can spot it later.",
+      fields: names.map((key) => ({ key, value: "" })),
+      confirmLabel: "Fill and copy",
+    });
+    if (values === null) return;
+    await store.copy(fillIn(text, values));
+    flash(which);
+  });
+
+/**
+ * Open the summoned search over every block in the vault.
+ *
+ * Already open stays open: the shortcut can arrive while it is up, and
+ * wiping out what someone has typed is not what they asked for.
+ */
+const openPalette = () =>
+  guard(async () => {
+    if (palette) return;
+    await refreshFiles();
+    const items = [];
+    for (const f of files) {
+      const file = await store.read(f.name);
+      for (const b of parse(file.content).blocks) {
+        items.push({ file: f.name, h: b.h, body: bodyText(b.t) });
+      }
+    }
+    palette = { q: "", items, sel: 0 };
+    caret = null;
+    draw();
+  });
+
+const closePalette = () => {
+  palette = null;
+  caret = null;
+  draw();
+};
+
+/** Copy the chosen block and get out of the way, which is the whole point. */
+const takeFromPalette = (k) =>
+  guard(async () => {
+    const hits = paletteHits();
+    const it = hits[k === undefined ? Math.min(palette.sel, hits.length - 1) : k];
+    if (!it) return;
+    await store.copy(it.body);
+    closePalette();
+    await store.hide();
+  });
+
+const movePalette = (by) => {
+  const n = paletteHits().length;
+  if (n) palette.sel = (Math.min(palette.sel, n - 1) + by + n) % n;
+  draw();
+};
 
 const startEdit = (i) => {
   editing = { i, mode: "body" };
@@ -524,16 +814,13 @@ const commitEdit = () =>
   guard(async () => {
     if (!editing) return;
     const { i, mode } = editing;
-    if (mode === "body") {
-      setBody(doc.blocks[i], draft);
-    } else {
-      const h = draft.trim();
-      if (!h) return cancelEdit();
-      doc.blocks[i].h = h;
-    }
-    editing = null;
-    caret = null;
-    await save();
+    const h = draft.trim();
+    if (mode === "head" && !h) return cancelEdit();
+    // A refused save leaves `editing` alone, so the editor stays open with
+    // the typing still in it and the toast says what went wrong.
+    await commit(() =>
+      mode === "body" ? setBody(doc, doc.blocks[i], draft) : setHeading(doc.blocks[i], h)
+    );
   });
 
 /* ------------------------------------------------------------------ *
@@ -541,6 +828,9 @@ const commitEdit = () =>
  * ------------------------------------------------------------------ */
 
 function onClick(e) {
+  const hit = e.target.closest("[data-hit]");
+  if (hit) return takeFromPalette(Number(hit.dataset.hit));
+
   const file = e.target.closest("[data-file]");
   if (file) return guard(() => open(file.dataset.file));
 
@@ -566,23 +856,42 @@ function onClick(e) {
       return copyBlock(i);
     case "delete-block":
       return deleteBlock(i);
+    case "fill":
+      return fillAndCopy([i], i);
+    case "fill-all":
+      return fillAndCopy(chosen(), "all");
     case "copy-all":
       return copyTogether();
+    case "toast-do": {
+      const run = undoing;
+      hideToast();
+      return run && run();
+    }
     case "clear-picks":
       picked.clear();
       return draw();
     case "ask-ok":
-      return settle(asking.input ? document.getElementById("ask-input").value : true);
+      return settle(answer());
     case "ask-cancel":
-      return settle(asking.input ? null : false);
+      return settle(asking.input || asking.fields ? null : false);
   }
 }
 
 function onInput(e) {
   const t = e.target;
+  if (t.id === "palette-q") {
+    palette.q = t.value;
+    palette.sel = 0;
+    caret = t.selectionStart;
+    return draw();
+  }
   if (t === el.search) {
     filter = t.value;
     return draw();
+  }
+  if (t.dataset.field !== undefined) {
+    asking.fields[Number(t.dataset.field)].value = t.value;
+    return;
   }
   if (t.dataset.editor !== undefined || t.dataset.rename !== undefined) {
     draft = t.value;
@@ -593,8 +902,27 @@ function onInput(e) {
 function onKey(e) {
   const ctrl = e.ctrlKey || e.metaKey;
 
+  // The summoned search owns the keyboard while it is up.
+  if (palette) {
+    if (e.key === "Escape") return closePalette();
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      return movePalette(e.key === "ArrowDown" ? 1 : -1);
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      return takeFromPalette();
+    }
+    return;
+  }
+
+  if (ctrl && e.altKey && e.key.toLowerCase() === "p") {
+    e.preventDefault();
+    return openPalette();
+  }
+
   if (e.key === "Escape") {
-    if (asking) return settle(asking.input ? null : false);
+    if (asking) return settle(asking.input || asking.fields ? null : false);
     if (editing) return cancelEdit();
     if (filter || document.activeElement === el.search) {
       el.search.value = "";
@@ -605,9 +933,9 @@ function onKey(e) {
     return;
   }
 
-  if (asking && e.key === "Enter" && asking.input) {
+  if (asking && e.key === "Enter" && (asking.input || asking.fields)) {
     e.preventDefault();
-    return settle(document.getElementById("ask-input").value);
+    return settle(answer());
   }
 
   if (editing && editing.mode === "head" && e.key === "Enter") {
@@ -657,6 +985,10 @@ function bind() {
   await guard(async () => {
     el.vault.textContent = await store.vaultPath();
   });
+  await guard(async () => {
+    el.shortcut.textContent = `${await store.shortcut()} opens your deck`;
+  });
+  await guard(() => store.onSummon(openPalette));
   await guard(refreshFiles);
   if (files.length) await guard(() => open(files[0].name));
   else draw();

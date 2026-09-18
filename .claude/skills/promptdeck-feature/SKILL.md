@@ -7,8 +7,10 @@ description: Use when adding or changing behaviour in PromptDeck — a new Tauri
 
 ## Two layers, no third
 
-`src-tauri/src/main.rs` does every filesystem operation and nothing else. It
-stays under about 150 lines. `src/app.js` does everything else: the store shim,
+`src-tauri/src/main.rs` does every filesystem operation, and the two things
+that can only happen in the Tauri builder: the tray icon and the global
+shortcut. Its commands stay under about 250 lines, with its tests below them in
+the same file. `src/app.js` does everything else: the store shim,
 markdown parsing, state, rendering, keyboard. There is no service layer, no
 module system, no build step. If a change seems to need a third place to live,
 it is probably two changes.
@@ -32,6 +34,16 @@ Four steps, all four or none:
 Error strings reach the user's screen unchanged. Write them as sentences that
 name what failed and which file.
 
+## Resident, not just a window
+
+Closing the window hides it to the tray; the app keeps running so `Ctrl+Alt+P`
+still works, and Quit is on the tray menu. Two things follow. The tray may not
+build on a desktop that has no tray, so `Resident` records whether it did and
+the close button only hides when it did — otherwise the app would vanish with
+nothing left to click. And the shortcut may already be taken, so
+`summon_shortcut` hands the frontend either the shortcut or the reason, and the
+sidebar says which.
+
 ## One draw()
 
 State lives in module-level variables: `doc`, `cur`, `editing`, `draft`,
@@ -45,15 +57,25 @@ Events are delegated from `document` and bound once in `bind()`.
 
 ## The round trip is the product
 
-`parse(md)` gives `{ front, lead, blocks:[{h,t}] }` and `serialize(doc)` puts it
-back byte for byte. `front` is the frontmatter, `lead` is everything above the
-first `##`. Both belong to the user and must survive every save.
+`parse(md)` gives `{ nl, front, lead, blocks:[{raw,h,t}] }` and
+`serialize(doc)` is `front + lead + each raw + t`. `front` is the frontmatter,
+`lead` is everything above the first `##`, `nl` is the file's own line ending,
+and `raw` is the heading line exactly as it was read. All of it belongs to the
+user and all of it survives a save: a heading is only rewritten when someone
+renames it, through `setHeading()`.
 
-After changing either function, prove it: assert
-`serialize(parse(x)) === x` over frontmatter, lead text, `###` headings that are
-not blocks, code fences, blank lines inside a body, and a file with no trailing
-newline. Then check that editing one block leaves its neighbours untouched.
-Throw the assertions away afterwards; they are proof, not a test suite.
+The proof lives in `scripts/roundtrip.js`, which reads the region between the
+`/* markdown:begin */` and `/* markdown:end */` markers in `app.js` and asserts
+`serialize(parse(x)) === x` over every file that has caught us out — CRLF, code
+fences containing `##`, odd heading spacing, no trailing newline, frontmatter
+alone. Change the parser and add the case that made you change it. `cargo test`
+covers the same ground in Rust: name validation and the save stamp.
+
+Every save carries the stamp from the read it started at, and a save whose
+stamp no longer matches the file is refused rather than applied, because
+someone may be editing the same file in vim. Frontend mutations go through
+`commit()`, which puts the document back if the write is refused, so the
+screen never claims something the file does not say.
 
 Every save writes the file and then reads it back from disk, so the screen shows
 what is actually stored. Keep it that way.

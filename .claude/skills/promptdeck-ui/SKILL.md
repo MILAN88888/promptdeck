@@ -60,3 +60,8 @@ Errors do not apologise and do not blame. They say what failed and which file:
 
 Empty states invite the next action instead of reporting a void: "No files yet.
 Create one to start a deck."
+
+A toast can carry one button, and only one: the way back from what it is
+reporting. It says what it does — "Put it back", not "Undo" — and the offer and
+the means to take it expire together, so the app never says something can be
+undone after it no longer can.

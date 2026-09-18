@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.2.0 — 2026-09-18
+
+Open your deck from anywhere, fill in a prompt on its way to the clipboard, and
+stop losing text you meant to keep.
+
+- **Ctrl+Alt+P opens PromptDeck from wherever you are**, with a search over
+  every block in every file. Type, press Enter, and the block is on your
+  clipboard and PromptDeck is out of your way again. Closing the window now
+  leaves it in your system tray so the shortcut keeps working; quit from the
+  tray menu.
+- **Fill in placeholders before copying.** A block containing `{{markers}}` gets
+  a Fill button that asks once for each name and copies the finished text.
+  Works across a multi-block selection too. Anything you leave blank keeps its
+  marker, and your file is never changed — the filling happens on the way to
+  the clipboard.
+- **Deleting a file moves it to your trash** instead of destroying it, so you
+  can get it back from your file manager.
+- **Deleting a block offers to put it back** for a few seconds afterwards. Take
+  the offer and it returns where it was, body and all.
+- **PromptDeck will no longer overwrite a file you changed elsewhere.** If you
+  edit the same file in vim while a block is open here, saving is refused with a
+  message instead of quietly replacing your work, and what you typed stays in
+  the editor. Reload to pick up the new version.
+
+Fixed:
+
+- Files saved with Windows line endings showed **no blocks at all**. Their
+  headings are now found, and their line endings are kept on save.
+- A `##` inside a fenced code block was treated as a heading, splitting a block
+  in two. Fenced code is now left alone.
+- Saving rewrote heading lines that had unusual spacing, and inserted a blank
+  line between two adjacent headings. Headings are now written back exactly as
+  they were unless you rename them.
+- Naming a new file `notes.txt` silently created `notes.txt.md`, and an empty
+  name created a file the sidebar never showed. Both are now refused, with a
+  message saying why.
+
 ## 0.1.0 — 2026-09-11
 
 First release.

@@ -14,12 +14,18 @@ step "Frontend syntax"
 node --check src/app.js
 echo "src/app.js parses"
 
+step "Markdown round trip"
+node scripts/roundtrip.js
+
 step "Rust formatting"
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 echo "formatting is clean"
 
 step "Clippy"
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+step "Rust tests"
+cargo test --manifest-path src-tauri/Cargo.toml
 
 step "Versions in step"
 scripts/bump.sh --check
