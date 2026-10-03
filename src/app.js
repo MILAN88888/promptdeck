@@ -221,6 +221,9 @@ let cur = null;
 let editing = null; // { i, mode: "body" | "head" }
 let draft = "";
 let caret = null;
+let past = []; // earlier drafts, newest last, for Ctrl+Z while editing
+let future = []; // drafts undone, for Ctrl+Shift+Z / Ctrl+Y
+let typed = null; // { kind, at } of the last input, so a run of typing undoes as one
 let picked = new Set();
 let filter = "";
 let copied = null; // block index, or "all"
@@ -378,7 +381,9 @@ function card(b, i) {
          <button data-act="cancel">Cancel</button>
          <span class="hint">Ctrl+S saves, Escape cancels</span>
        </div>`
-    : `<div class="body">${marked(body)}</div>`;
+    : `<div class="body" data-body="${i}" title="Double-click to edit">${marked(
+        body
+      )}</div>`;
 
   return `<article class="block${picked.has(i) ? " picked" : ""}">
     <div class="block-head">
@@ -790,10 +795,18 @@ const movePalette = (by) => {
   draw();
 };
 
+/** A fresh editor has nothing to undo, whatever the last one had. */
+const forgetHistory = () => {
+  past = [];
+  future = [];
+  typed = null;
+};
+
 const startEdit = (i) => {
   editing = { i, mode: "body" };
   draft = bodyText(doc.blocks[i].t);
   caret = null;
+  forgetHistory();
   draw();
 };
 
@@ -801,12 +814,53 @@ const startRename = (i) => {
   editing = { i, mode: "head" };
   draft = doc.blocks[i].h;
   caret = null;
+  forgetHistory();
   draw();
 };
 
 const cancelEdit = () => {
   editing = null;
   caret = null;
+  forgetHistory();
+  draw();
+};
+
+/**
+ * Keep the draft as it was before this input, unless the input carries on
+ * a run of the same kind of typing, so one Ctrl+Z takes back a word or a
+ * paste rather than a single letter.
+ */
+const remember = (kind) => {
+  const now = Date.now();
+  const run =
+    typed && typed.kind === kind && now - typed.at < 1000 && !/paste|drop|cut/i.test(kind);
+  if (!run) past.push(draft);
+  future = [];
+  typed = { kind, at: now };
+};
+
+/**
+ * Step the draft back or forward through its history.
+ *
+ * The editor is redrawn from `draft` like everything else, so the textarea's
+ * own undo stack cannot be relied on; this one lives in state instead. The
+ * caret lands at the end of the change, found by matching the tails.
+ */
+const stepHistory = (from, to) => {
+  if (!from.length) return;
+  const was = draft;
+  to.push(was);
+  draft = from.pop();
+  let tail = 0;
+  while (
+    tail < draft.length &&
+    tail < was.length &&
+    draft[draft.length - 1 - tail] === was[was.length - 1 - tail]
+  ) {
+    tail++;
+  }
+  caret = draft.length - tail;
+  typed = null;
   draw();
 };
 
@@ -894,6 +948,7 @@ function onInput(e) {
     return;
   }
   if (t.dataset.editor !== undefined || t.dataset.rename !== undefined) {
+    remember(e.inputType || "");
     draft = t.value;
     caret = t.selectionStart;
   }
@@ -943,6 +998,16 @@ function onKey(e) {
     return commitEdit();
   }
 
+  const inEditor =
+    e.target.dataset && (e.target.dataset.editor !== undefined || e.target.dataset.rename !== undefined);
+  if (editing && inEditor && ctrl && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (k === "z" || k === "y") {
+      e.preventDefault();
+      return k === "y" || e.shiftKey ? stepHistory(future, past) : stepHistory(past, future);
+    }
+  }
+
   if (ctrl && e.key.toLowerCase() === "s") {
     e.preventDefault();
     if (editing) commitEdit();
@@ -966,7 +1031,9 @@ function bind() {
   document.addEventListener("keydown", onKey);
   document.addEventListener("dblclick", (e) => {
     const h = e.target.closest("[data-head]");
-    if (h) startRename(Number(h.dataset.head));
+    if (h) return startRename(Number(h.dataset.head));
+    const b = e.target.closest("[data-body]");
+    if (b) startEdit(Number(b.dataset.body));
   });
   el["new-file"].addEventListener("click", newFile);
   el["new-block"].addEventListener("click", newBlock);
