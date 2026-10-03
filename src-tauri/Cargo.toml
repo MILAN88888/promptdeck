@@ -1,6 +1,6 @@
 [package]
 name = "promptdeck"
-version = "0.2.0"
+version = "0.2.1"
 description = "Store prompts as markdown blocks and copy them into a terminal"
 authors = ["Milan"]
 license = "MIT"

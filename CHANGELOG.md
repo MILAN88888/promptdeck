@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 — 2026-10-03
+
+Two fixes for editing a block.
+
+- **Ctrl+Z works while editing.** Undo takes back what you typed in the block
+  editor or the rename field, a run of typing at a time; Ctrl+Shift+Z or Ctrl+Y
+  puts it back.
+- **Double-click a block's text to edit it**, the same way double-clicking its
+  heading renames it.
+
 ## 0.2.0 — 2026-09-18
 
 Open your deck from anywhere, fill in a prompt on its way to the clipboard, and
